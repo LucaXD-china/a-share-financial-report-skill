@@ -1,0 +1,4 @@
+interface:
+  display_name: "A 股财报分析"
+  short_description: "自动拉取并复核 A 股公开财报与公告风险信号清单工具"
+  default_prompt: "Use $a-share-financial-report to review 600519's latest annual and quarterly financial reports."

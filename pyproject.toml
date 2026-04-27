@@ -1,0 +1,20 @@
+[project]
+name = "a-share-financial-report-skill"
+version = "0.1.0"
+description = "Codex skill for pulling and reviewing A-share financial reports with AkShare."
+requires-python = ">=3.9"
+dependencies = [
+  "akshare>=1.18.0",
+  "pandas>=1.5.0",
+  "numpy>=1.23.0",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=7.0.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
