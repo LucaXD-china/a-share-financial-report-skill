@@ -8,8 +8,13 @@ import csv
 import importlib
 import json
 import math
+import os
 import re
 import sys
+
+# AkShare draws tqdm progress bars on stderr; keep CLI output clean for callers
+# that treat stderr as failure (PowerShell, pipelines, agent harnesses).
+os.environ.setdefault("TQDM_DISABLE", "1")
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -629,6 +634,9 @@ def assess_financial_signals(
     industry_profile: str = "general",
 ) -> List[Dict[str, str]]:
     signals: List[Dict[str, str]] = []
+    # Rows are sorted ascending; leverage/liquidity checks only make sense on the
+    # latest period, otherwise every historical quarter repeats the same warning.
+    latest_period = str(rows[-1].get("report_date", "-")) if rows else None
     for row in rows:
         period = str(row.get("report_date", "-"))
         add_yoy_signal(
@@ -729,7 +737,11 @@ def assess_financial_signals(
                 )
 
         short_debt_cash = row.get("short_debt_cash_ratio")
-        if industry_profile != "financial" and short_debt_cash is not None:
+        if (
+            industry_profile != "financial"
+            and short_debt_cash is not None
+            and period == latest_period
+        ):
             if short_debt_cash >= 2.0:
                 level = "red"
             elif short_debt_cash >= 1.0:
@@ -801,7 +813,9 @@ def assess_financial_signals(
                     )
                 )
 
-    signals.sort(key=lambda item: (SEVERITY_ORDER.get(item["level"], 9), item["period"], item["topic"]))
+    # Stable two-pass sort: severity first, newest period first inside each level.
+    signals.sort(key=lambda item: item["period"], reverse=True)
+    signals.sort(key=lambda item: SEVERITY_ORDER.get(item["level"], 9))
     return signals
 
 
@@ -866,17 +880,30 @@ def add_working_capital_signal(
     )
 
 
-def extract_audit_opinion_signals(statements: Mapping[str, Any]) -> List[Dict[str, str]]:
+def extract_audit_opinion_signals(
+    statements: Mapping[str, Any],
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+) -> List[Dict[str, str]]:
     signals: List[Dict[str, str]] = []
     for key, df in statements.items():
         if df_empty(df):
             continue
         for row in dataframe_to_records(df):
             report_date = to_date(get_text(row, ["REPORT_DATE", "报告日", "report_date"]))
+            if report_date is not None:
+                if start_date is not None and report_date < start_date:
+                    continue
+                if end_date is not None and report_date > end_date:
+                    continue
             opinion = get_text(row, ["OPINION_TYPE", "OSOPINION_TYPE", "审计意见"])
             if not opinion:
                 continue
             if "标准无保留" in opinion:
+                continue
+            # Interim and quarterly statements are unaudited by design; flagging
+            # "未经审计" produces false positives for every non-annual period.
+            if "未经审计" in opinion:
                 continue
             level = "red" if any(word in opinion for word in ["否定", "无法", "保留"]) else "yellow"
             signals.append(
@@ -1143,10 +1170,12 @@ def run(args: argparse.Namespace) -> Path:
     company_profile = infer_company_profile(company_info, statements, disclosures)
     industry_profile = classify_industry(args.industry_profile, company_profile)
     signals = assess_financial_signals(normalized_rows, industry_profile=industry_profile)
-    signals.extend(extract_audit_opinion_signals(statements))
+    signals.extend(extract_audit_opinion_signals(statements, start_date, end_date))
     signals.extend(disclosure_risk_signals(disclosures))
     signals = dedupe_signals(signals)
-    signals.sort(key=lambda item: (SEVERITY_ORDER.get(item["level"], 9), item["period"], item["topic"]))
+    # Stable two-pass sort: severity first, newest period first inside each level.
+    signals.sort(key=lambda item: item["period"], reverse=True)
+    signals.sort(key=lambda item: SEVERITY_ORDER.get(item["level"], 9))
 
     if not normalized_rows and not disclosures:
         raise FriendlyError("未获取到可用财报或公告数据；请检查股票代码、日期范围、网络和 AkShare 数据源状态。")

@@ -86,5 +86,70 @@ class AnalyzeAShareReportTest(unittest.TestCase):
         self.assertEqual(signals[0]["topic"], "披露风险")
 
 
+    def test_audit_signal_ignores_unaudited_and_out_of_range(self):
+        class FakeFrame:
+            empty = False
+
+            def __init__(self, rows):
+                self._rows = rows
+
+            def to_dict(self, orient="records"):
+                return self._rows
+
+        statements = {
+            "balance_report": FakeFrame(
+                [
+                    {"REPORT_DATE": "2002-06-30", "OPINION_TYPE": "未经审计"},
+                    {"REPORT_DATE": "2026-09-30", "OPINION_TYPE": "标准无保留意见"},
+                    {"REPORT_DATE": "2026-12-31", "OPINION_TYPE": "保留意见"},
+                ]
+            )
+        }
+        signals = module.extract_audit_opinion_signals(
+            statements, module.date(2024, 1, 1), module.date(2026, 10, 27)
+        )
+        self.assertEqual(signals, [])
+
+    def test_audit_signal_flags_non_standard_opinion_in_range(self):
+        class FakeFrame:
+            empty = False
+
+            def __init__(self, rows):
+                self._rows = rows
+
+            def to_dict(self, orient="records"):
+                return self._rows
+
+        statements = {
+            "profit_report": FakeFrame(
+                [{"REPORT_DATE": "2025-12-31", "OPINION_TYPE": "保留意见"}]
+            )
+        }
+        signals = module.extract_audit_opinion_signals(
+            statements, module.date(2024, 1, 1), module.date(2026, 10, 27)
+        )
+        self.assertEqual(len(signals), 1)
+        self.assertEqual(signals[0]["level"], "red")
+
+    def test_short_debt_only_reported_for_latest_period(self):
+        rows = [
+            {"report_date": "2025-12-31", "short_debt_cash_ratio": 3.0},
+            {"report_date": "2026-09-30", "short_debt_cash_ratio": 2.5},
+        ]
+        signals = module.assess_financial_signals(rows)
+        debt = [signal for signal in signals if signal["topic"] == "短债压力"]
+        self.assertEqual(len(debt), 1)
+        self.assertEqual(debt[0]["period"], "2026-09-30")
+
+    def test_signals_sorted_newest_first_within_level(self):
+        rows = [
+            {"report_date": "2025-09-30", "revenue_yoy": -0.50},
+            {"report_date": "2026-09-30", "revenue_yoy": -0.45},
+        ]
+        signals = module.assess_financial_signals(rows)
+        revenue = [signal for signal in signals if signal["metric"] == "营业收入同比"]
+        self.assertEqual([signal["period"] for signal in revenue], ["2026-09-30", "2025-09-30"])
+
+
 if __name__ == "__main__":
     unittest.main()
